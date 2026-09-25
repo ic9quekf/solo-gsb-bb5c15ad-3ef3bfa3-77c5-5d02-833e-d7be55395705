@@ -3,7 +3,7 @@
 const path = require('path');
 const fs = require('fs');
 const express = require('express');
-const { cutBoards, recutBoards, UserError } = require('./cutting');
+const { cutBoards, recutBoards, cancelPreviewBoards, UserError } = require('./cutting');
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8080;
@@ -39,6 +39,20 @@ app.post('/api/recut', (req, res) => {
       return res.status(err.statusCode).json({ ok: false, error: err.message });
     }
     console.error('补切计算失败：', err);
+    res.status(500).json({ ok: false, error: '服务器内部错误' });
+  }
+});
+
+// 撤单影响预览：以生成方案时的输入快照分别计算撤单前后排料，原方案与表单不变
+app.post('/api/cancel-preview', (req, res) => {
+  try {
+    const result = cancelPreviewBoards(req.body);
+    res.json({ ok: true, result });
+  } catch (err) {
+    if (err instanceof UserError) {
+      return res.status(err.statusCode).json({ ok: false, error: err.message });
+    }
+    console.error('撤单预览计算失败：', err);
     res.status(500).json({ ok: false, error: '服务器内部错误' });
   }
 });

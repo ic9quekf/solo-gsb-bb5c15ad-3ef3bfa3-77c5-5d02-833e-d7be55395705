@@ -8,9 +8,12 @@
 启用尚未使用、且能加工的余板，最后才开标准新板；余板不计材料费。
 发现损坏件时，可在分单取件清单中勾选后一键生成**独立补切方案**
 （仅重排所选件，补切只开标准新板、不耗用余板，原方案落位与分摊不变）。
+在已生成的多订单方案中选择一张订单，还可生成**撤单影响预览**：
+以生成该方案时的输入快照分别计算撤单前后排料，对比新增标准板数、已用余板编号、
+材料费总额与每张保留订单的分摊额（费用差值按整数分计算），原方案与表单均不改动。
 
 - 前端：React 18 + Vite
-- 后端：Node.js + Express（排料 / 分摊 / 补切算法见 `server/src/cutting.js`）
+- 后端：Node.js + Express（排料 / 分摊 / 补切 / 撤单预览算法见 `server/src/cutting.js`）
 - 部署：Docker / Docker Compose（镜像内完成依赖安装与前端构建，一键启动）
 
 ## 一条命令启动
@@ -46,6 +49,7 @@ docker compose up -d --build
 | 健康检查 | http://localhost:8080/api/health |
 | 排料计算 API（含余板库存 `stockBoards`） | `POST http://localhost:8080/api/cut` |
 | 缺件补切 API（补切只开标准新板，不耗用余板） | `POST http://localhost:8080/api/recut` |
+| 撤单影响预览 API（按输入快照重算撤单前后排料） | `POST http://localhost:8080/api/cancel-preview` |
 
 本地开发模式下前端为 http://localhost:5173 （`/api` 已配置代理到 8080）。
 
@@ -130,6 +134,17 @@ npm test
    - 每张补切新板的裁切板图（含**下刀次序**）与落位 / 刀路明细表。
    补切沿用表单中的**设备最大单刀长度**（留空即不限制）；补切新板也无法在
    上限内加工时，同样报错指出订单、零件与件号，不输出超限刀路。
+7. **撤单影响预览**：在结果区「撤单影响预览」中，下拉选择**原方案里的一张订单号**
+   （表单中订单号留空的，已按其在原输入中的位置固定自动编号为“订单1、订单2…”），
+   点击「生成撤单影响预览」。系统以**生成该方案时的同一输入快照**分别计算撤单前后排料，
+   沿用完全相同的锯缝 / 旋转 / 余板库存 / 单刀长度规则：
+   - **原方案与当前表单均不改动**；撤单后其余订单**保持原订单号，不重新自动编号**。
+   - 页面卡片展示撤单前后**新增标准板数**（含变化张数）、**材料费总额**（含变化金额），
+     以及**已用余板编号**的前后对比；
+   - 表格逐张列出**保留订单**的撤单前分摊额、撤单后分摊额与**增减差值**，
+     费用差值一律按后端**整数分**计算（撤单后费用上升标红、下降标绿）；
+   - 折叠区可展开撤单后的全部板图、落位表、刀路表与逐板分摊明细。
+   - 原方案**只有一张订单**、所填订单号**在原方案中不存在**（含留空）时，页面与 API 均明确报错。
 
 ## 切割规则
 
@@ -205,6 +220,22 @@ npm test
 - 补切新板按同样的单板价计费：新增材料费 = 新增板数 × 单板价，
   并在补切方案内按订单零件面积比例分摊（最大余数法）。
 - 补切清单逐件给出：**原板号**（原方案所在板）与**新板号**（补切方案所在板）。
+
+## 撤单影响预览规则
+
+- 撤单对象以**原方案订单号**定位：请求字段 `cancelOrderNo` 必须与原方案中的某张订单号
+  完全一致（去空白匹配）。表单中**留空的订单号**在生成方案时已按其在原输入中的位置
+  **固定自动编号**为“订单1、订单2…”；撤单筛除后，**其余订单一律保持原编号、绝不改名**。
+- 后端以**生成该方案时的同一输入快照**先重算撤单前方案（与 `/api/cut` 完全一致、原样返回），
+  再将撤单订单的全部零件行从展平序列中整体筛除，其余订单按**原输入顺序**、用**完全相同的
+  切割规则**（锯缝、旋转、评分、最大单刀长度）与**同一份余板库存顺序**重排撤单后方案；
+  预览**不修改原方案落位 / 分摊，也不改动任何表单输入**。
+- 对比输出：撤单前后**新增标准板数**及变化张数、**已用余板编号**列表、
+  **材料费总额（整数分）**及变化额，以及每张**保留订单**的撤单前 / 撤单后分摊额与
+  **增减差值（整数分）**。各保留订单增减差值之和可能不等于材料费总额变化
+  （撤单订单承担的份额被整体移除，其余份额按撤单后排料重新分摊）。
+- 原方案**只有一张订单**（撤单后无保留订单）、`cancelOrderNo` 留空或在原方案中**不存在**时，
+  返回 HTTP 400 明确报错。
 
 ## 材料费分摊规则
 
@@ -405,6 +436,65 @@ npm test
 - `recut.boards[]`：补切新板（`kind` 恒为 `"standard"`）的落位（含 `srcBoard`）、
   刀序与逐板分摊，结构同原方案。
 - 所选件不存在、重复选择、补切超刀长或输入非法时返回 HTTP 400 与
+  `{ "ok": false, "error": "..." }`。
+
+`POST /api/cancel-preview`（撤单影响预览）
+
+请求体 = 排料输入（同 `/api/cut`，含 `stockBoards` / `maxCutLength`，作为生成方案时的输入快照）
++ `cancelOrderNo` 要撤下的订单号（按**原方案订单号**定位；留空订单号即其固定自动编号）。
+
+```json
+{
+  "boardWidth": 2440,
+  "boardHeight": 1220,
+  "kerf": 3,
+  "boardPrice": 180.00,
+  "maxCutLength": 800,
+  "stockBoards": [{ "id": "YB-01", "width": 1200, "height": 800 }],
+  "orders": [
+    { "orderNo": "SO-1001", "parts": [{ "name": "柜门", "width": 600, "height": 400, "quantity": 8 }] },
+    { "orderNo": "SO-1002", "parts": [{ "name": "柜门", "width": 600, "height": 400, "quantity": 4 }] }
+  ],
+  "cancelOrderNo": "SO-1002"
+}
+```
+
+返回（节选）：
+
+```json
+{
+  "ok": true,
+  "result": {
+    "canceledOrder": "SO-1002",
+    "original": { "standardBoardsCount": 3, "totalMaterialCents": 54000, "...": "同 /api/cut，原样不变" },
+    "after":    { "standardBoardsCount": 2, "totalMaterialCents": 36000, "...": "同 /api/cut，订单号沿用原编号" },
+    "compare": {
+      "beforeStandardBoardsCount": 3,
+      "afterStandardBoardsCount": 2,
+      "standardBoardsDelta": -1,
+      "beforeStockUsedIds": ["YB-01"],
+      "afterStockUsedIds": [],
+      "beforeTotalMaterialCents": 54000,
+      "afterTotalMaterialCents": 36000,
+      "totalMaterialDeltaCents": -18000,
+      "retainedCount": 1,
+      "retainedOrders": [
+        { "order": "SO-1001", "partsCount": 8, "boardIndices": [1, 2],
+          "beforeMaterialCents": 30000, "afterMaterialCents": 36000, "deltaCents": 6000 }
+      ]
+    }
+  }
+}
+```
+
+- `original` / `after`：撤单前 / 撤单后排料结果，结构均与 `/api/cut` 完全相同；
+  `after.orders[]` / `after.pickList[]` 仅含保留订单，订单号沿用原方案固定编号（不改名）。
+- `compare.standardBoardsDelta` = 撤单后 − 撤单前的新增标准板数；
+  `beforeStockUsedIds` / `afterStockUsedIds` 为撤单前后**已用余板编号**（按开料顺序）。
+- `compare.totalMaterialDeltaCents`：材料费总额变化（整数分）；
+  `compare.retainedOrders[]` 逐张保留订单给出撤单前 / 撤单后分摊额与
+  `deltaCents`（撤单后 − 撤单前，整数分）。
+- 只有一张订单、订单号留空或在原方案中不存在时返回 HTTP 400 与
   `{ "ok": false, "error": "..." }`。
 
 ## 目录结构

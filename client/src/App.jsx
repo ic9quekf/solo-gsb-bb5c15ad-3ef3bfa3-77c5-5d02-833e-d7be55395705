@@ -62,6 +62,11 @@ export default function App() {
   const [recut, setRecut] = useState(null);
   const [recutError, setRecutError] = useState('');
   const [recutLoading, setRecutLoading] = useState(false);
+  // 撤单影响预览：按原方案订单号选择撤单对象，预览结果与状态（原方案与表单不变）
+  const [cancelOrderNo, setCancelOrderNo] = useState('');
+  const [cancelPreview, setCancelPreview] = useState(null);
+  const [cancelError, setCancelError] = useState('');
+  const [cancelLoading, setCancelLoading] = useState(false);
 
   // ---- 订单 / 零件行编辑 ----
   const updateOrder = (oi, key, value) => {
@@ -100,6 +105,12 @@ export default function App() {
     setRecutError('');
   };
 
+  const resetCancelPreview = () => {
+    setCancelOrderNo('');
+    setCancelPreview(null);
+    setCancelError('');
+  };
+
   const loadSample = () => {
     setBoardWidth(String(SAMPLE_BOARD.boardWidth));
     setBoardHeight(String(SAMPLE_BOARD.boardHeight));
@@ -111,6 +122,7 @@ export default function App() {
     setResult(null);
     setError('');
     resetRecut();
+    resetCancelPreview();
   };
 
   // 组装请求载荷并校验余板行：全空行忽略；非空行必须编号唯一且长 / 宽为正数
@@ -167,6 +179,7 @@ export default function App() {
     }
     setResult(null);
     resetRecut();
+    resetCancelPreview();
     setLoading(true);
     try {
       const res = await fetch('/api/cut', {
@@ -241,11 +254,53 @@ export default function App() {
     }
   };
 
+  // ---- 撤单影响预览 ----
+  // 撤单对象按原方案订单号定位（空白订单号已按原位置固定自动编号）；
+  // 提交的是生成方案时的同一输入快照，后端分别重算撤单前后排料，原方案与表单不变。
+  const changeCancelOrder = (value) => {
+    setCancelOrderNo(value);
+    setCancelPreview(null);
+    setCancelError('');
+  };
+
+  const submitCancelPreview = async () => {
+    if (!result || !cancelOrderNo) return;
+    setCancelError('');
+    if (!validateMaxCut(maxCutLength)) {
+      setCancelError('设备最大单刀长度必须为正数（留空则不限制）');
+      return;
+    }
+    const { payload, error: stockError } = buildPayload();
+    if (stockError) {
+      setCancelError(stockError);
+      return;
+    }
+    setCancelPreview(null);
+    setCancelLoading(true);
+    try {
+      const res = await fetch('/api/cancel-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...payload, cancelOrderNo }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setCancelError(data.error || '撤单预览失败，请检查所填订单号');
+      } else {
+        setCancelPreview(data.result);
+      }
+    } catch (err) {
+      setCancelError('无法连接排料服务，请确认后端已启动');
+    } finally {
+      setCancelLoading(false);
+    }
+  };
+
   return (
     <div className="page">
       <header className="site-header">
         <h1>矩形板材下料 · 多订单拼版断头切割排料</h1>
-        <p>多张订单混合拼版：按订单与零件行顺序断头切割，可登记带唯一编号的临时余板库存（已开板放不下时先用余板、最后开标准新板），结果保留订单归属，按单取件并分摊材料费；损坏件可勾选后生成独立补切方案</p>
+        <p>多张订单混合拼版：按订单与零件行顺序断头切割，可登记带唯一编号的临时余板库存（已开板放不下时先用余板、最后开标准新板），结果保留订单归属，按单取件并分摊材料费；损坏件可勾选后生成独立补切方案；还可选择一张订单预览撤单前后的用板、余板与材料费变化（原方案与表单不变）</p>
       </header>
 
       <main className="layout">
@@ -408,6 +463,7 @@ export default function App() {
                 <li>结果按订单列出跨板件号、所在板号与坐标，方便分单取件</li>
                 <li>每板材料费按订单零件面积比例分摊（最大余数法分配分位尾差）</li>
                 <li>在分单取件清单勾选损坏件，可生成独立的缺件补切方案（补切只开标准新板，不耗用余板）</li>
+                <li>选择一张订单可预览撤单影响：按输入快照重算撤单前后排料，对比新增标准板数、已用余板编号、材料费总额与每张保留订单分摊额（原方案与表单不变）</li>
               </ul>
             </div>
           )}
@@ -415,6 +471,15 @@ export default function App() {
           {result && (
             <>
               <ResultView result={result} selected={selected} onToggleDamaged={toggleDamaged} />
+              <CancelPreviewSection
+                orders={result.orders.map((o) => o.order)}
+                orderNo={cancelOrderNo}
+                loading={cancelLoading}
+                preview={cancelPreview}
+                error={cancelError}
+                onChangeOrderNo={changeCancelOrder}
+                onSubmit={submitCancelPreview}
+              />
               <RecutSection
                 selectedCount={selected.size}
                 recut={recut}
@@ -428,7 +493,7 @@ export default function App() {
       </main>
 
       <footer className="site-footer">
-        断头切割规则：每一刀都贯穿当前所在矩形区域 · 允许零件旋转 90° · 按订单与零件行固定顺序排料 · 补切仅重排所选损坏件，原方案不变
+        断头切割规则：每一刀都贯穿当前所在矩形区域 · 允许零件旋转 90° · 按订单与零件行固定顺序排料 · 补切仅重排所选损坏件、撤单仅按快照预览影响，原方案与表单均不变
       </footer>
     </div>
   );
@@ -692,6 +757,241 @@ function ResultView({ result, selected, onToggleDamaged }) {
 }
 
 /**
+ * 撤单影响预览区块：按原方案订单号选择撤单对象 →
+ * 以生成方案时的输入快照分别计算撤单前后排料，展示新增标准板数、已用余板编号、
+ * 材料费总额的前后对比，以及每张保留订单的分摊额与增减差值（整数分）。
+ * 原方案与表单均保持不变；空白订单号按原位置固定自动编号，筛除后其余订单不改名。
+ */
+function CancelPreviewSection({ orders, orderNo, loading, preview, error, onChangeOrderNo, onSubmit }) {
+  const single = orders.length <= 1;
+  return (
+    <div className="cancel-section">
+      <h2 className="section-title">撤单影响预览</h2>
+      <p className="hint">
+        按<b>原方案订单号</b>选择要撤下的一张订单（表单中留空的订单号已按原位置固定自动编号）。
+        系统以<b>生成该方案时的输入快照</b>分别重算撤单前后排料，沿用相同切割规则与余板库存顺序；
+        撤单后其余订单<b>保持原订单号不变、不重新编号</b>，<b>原方案与当前表单均不改动</b>。
+        费用差值按<b>整数分</b>计算。
+      </p>
+      <div className="cancel-controls">
+        <select
+          className="cancel-select"
+          value={orderNo}
+          onChange={(e) => onChangeOrderNo(e.target.value)}
+          disabled={single || loading}
+        >
+          <option value="">{single ? '仅一张订单，无法撤单' : '请选择要撤下的订单…'}</option>
+          {orders.map((no) => (
+            <option key={no} value={no}>订单 {no}</option>
+          ))}
+        </select>
+        <button
+          type="button"
+          className="btn primary"
+          disabled={!orderNo || loading}
+          onClick={onSubmit}
+        >
+          {loading ? '正在重算撤单前后排料…' : '生成撤单影响预览'}
+        </button>
+      </div>
+      {single && (
+        <p className="hint cancel-warn">当前方案只有一张订单，撤单后将无保留订单，无法预览。</p>
+      )}
+
+      {error && (
+        <div className="alert" role="alert">
+          <strong>无法预览：</strong>{error}
+        </div>
+      )}
+
+      {preview && <CancelPreviewResult preview={preview} />}
+    </div>
+  );
+}
+
+function CancelPreviewResult({ preview }) {
+  const { compare } = preview;
+  return (
+    <div className="cancel-result">
+      <p className="hint cancel-target">
+        撤单对象：<b>订单 {preview.canceledOrder}</b>（已从撤单后排料中整体筛除）；
+        保留订单 {compare.retainedCount} 张。以下对比均为“撤单后 − 撤单前”。
+      </p>
+
+      <div className="stat-grid">
+        <div className="stat">
+          <b>{compare.beforeStandardBoardsCount} → {compare.afterStandardBoardsCount}</b>
+          <span>新增标准板数（前后）</span>
+        </div>
+        <div className={`stat ${compare.standardBoardsDelta !== 0 ? 'accent' : ''}`}>
+          <b className={deltaClass(compare.standardBoardsDelta)}>{signedInt(compare.standardBoardsDelta)}</b>
+          <span>新增标准板数变化</span>
+        </div>
+        <div className="stat">
+          <b>¥{yuan(compare.beforeTotalMaterialCents)} → ¥{yuan(compare.afterTotalMaterialCents)}</b>
+          <span>材料费总额（前后）</span>
+        </div>
+        <div className={`stat ${compare.totalMaterialDeltaCents !== 0 ? 'accent' : ''}`}>
+          <b className={deltaClass(compare.totalMaterialDeltaCents)}>
+            {signedYuan(compare.totalMaterialDeltaCents)}
+          </b>
+          <span>材料费总额变化</span>
+        </div>
+      </div>
+
+      <table className="detail-table stock-table">
+        <thead>
+          <tr><th>已用余板</th><th>撤单前</th><th>撤单后</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>已用余板编号</td>
+            <td>{compare.beforeStockUsedIds.length ? compare.beforeStockUsedIds.join('、') : '—（无）'}</td>
+            <td>{compare.afterStockUsedIds.length ? compare.afterStockUsedIds.join('、') : '—（无）'}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p className="hint">
+        撤单前排料使用余板 {compare.beforeStockUsedIds.length} 块、
+        撤单后使用余板 {compare.afterStockUsedIds.length} 块；
+        未被启用的余板原样退回库存、不产生费用。
+      </p>
+
+      {/* 每张保留订单的分摊额与增减差值（整数分） */}
+      <h3 className="recut-subtitle">保留订单材料费分摊变化</h3>
+      <table className="detail-table">
+        <thead>
+          <tr>
+            <th>保留订单号</th><th>零件数</th><th>撤单后所在板号</th>
+            <th>撤单前分摊（元）</th><th>撤单后分摊（元）</th><th>增减差值（元）</th>
+          </tr>
+        </thead>
+        <tbody>
+          {compare.retainedOrders.map((r) => (
+            <tr key={r.order}>
+              <td>{r.order}</td>
+              <td>{r.partsCount}</td>
+              <td>{r.boardIndices.join('、')}</td>
+              <td>¥{yuan(r.beforeMaterialCents)}</td>
+              <td>¥{yuan(r.afterMaterialCents)}</td>
+              <td className={deltaClass(r.deltaCents)}>
+                <b>{signedYuan(r.deltaCents)}</b>
+              </td>
+            </tr>
+          ))}
+          <tr className="sum-row">
+            <td>材料费总额（含撤单订单）</td>
+            <td colSpan={2}>{compare.retainedCount} 张保留订单</td>
+            <td>¥{yuan(compare.beforeTotalMaterialCents)}</td>
+            <td>¥{yuan(compare.afterTotalMaterialCents)}</td>
+            <td className={deltaClass(compare.totalMaterialDeltaCents)}>
+              <b>{signedYuan(compare.totalMaterialDeltaCents)}</b>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <p className="hint">
+        保留订单合计为撤单后全部材料费；撤单订单自身承担的份额被整体移除，
+        其余订单的分摊额按撤单后排料重新计算，故各订单增减差值之和可能与材料费总额变化不一致。
+      </p>
+
+      {/* 撤单后排料板图（折叠展示，默认收起） */}
+      <details className="cancel-boards">
+        <summary>查看撤单后排料板图与落位 / 刀路明细（{preview.after.boardsCount} 张板）</summary>
+        {preview.after.boards.map((b) => (
+          <div className={`board-card ${b.kind === 'stock' ? 'stock-board' : ''}`} key={b.index}>
+            <h3>
+              撤单后 第 {b.index} 张板 / 共 {preview.after.boardsCount} 张
+              {b.kind === 'stock' ? (
+                <span className="board-kind stock">余板 {b.stockId}（{strip(b.width)} × {strip(b.height)}，不计材料费）</span>
+              ) : (
+                <span className="board-kind standard">新增标准板（{strip(b.width)} × {strip(b.height)}）</span>
+              )}
+              {b.kind === 'standard' && <span className="board-price">板价 ¥{yuan(b.cost.priceCents)}</span>}
+            </h3>
+            <BoardDiagram board={b} boardWidth={b.width} boardHeight={b.height} />
+            <div className="board-stats">
+              <span>零件 {fmt(b.partsArea)}</span>
+              <span>锯缝 {fmt(b.kerfArea)}</span>
+              <span>余料 {fmt(b.remainderArea)}</span>
+              <span>利用率 {b.utilization}%</span>
+              <span>{b.cuts.length} 刀</span>
+              {preview.after.maxCutLength != null && (
+                <span className="cut-limit">实际最长刀 {strip(b.longestCut)} / 上限 {strip(preview.after.maxCutLength)}</span>
+              )}
+            </div>
+
+            {b.kind === 'standard' && b.cost.shares.length > 0 && (
+              <table className="detail-table cost-table">
+                <thead>
+                  <tr><th>本板材料费分摊</th><th>零件面积</th><th>面积占比</th><th>分摊额（元）</th></tr>
+                </thead>
+                <tbody>
+                  {b.cost.shares.map((s) => (
+                    <tr key={s.order}>
+                      <td>订单 {s.order}</td>
+                      <td>{fmt(s.area)}</td>
+                      <td>{s.ratio}%</td>
+                      <td>¥{yuan(s.cents)}</td>
+                    </tr>
+                  ))}
+                  <tr className="sum-row">
+                    <td>合计</td>
+                    <td>{fmt(b.partsArea)}</td>
+                    <td>100%</td>
+                    <td>¥{yuan(b.cost.priceCents)}</td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+            {b.kind === 'stock' && (
+              <p className="hint stock-cost-hint">余板库存板不收取材料费，本板零件不产生新的材料分摊。</p>
+            )}
+
+            <details>
+              <summary>查看撤单后零件落位与切割次序明细</summary>
+              <table className="detail-table">
+                <thead>
+                  <tr><th>订单</th><th>零件</th><th>件号</th><th>位置 x,y</th><th>占位 长×宽</th><th>旋转</th></tr>
+                </thead>
+                <tbody>
+                  {b.placements.map((p, i) => (
+                    <tr key={i}>
+                      <td>{p.order}</td>
+                      <td>{p.part}</td>
+                      <td>#{p.index}</td>
+                      <td>{strip(p.x)}, {strip(p.y)}</td>
+                      <td>{strip(p.w)} × {strip(p.h)}</td>
+                      <td>{p.rotated ? '是' : '否'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <table className="detail-table">
+                <thead>
+                  <tr><th>刀序</th><th>方向</th><th>起点 x1,y1</th><th>终点 x2,y2</th><th>贯穿长度</th></tr>
+                </thead>
+                <tbody>
+                  {b.cuts.map((c) => (
+                    <tr key={c.seq}>
+                      <td>{c.seq}</td>
+                      <td>{c.type === 'v' ? '竖切' : '横切'}</td>
+                      <td>{strip(c.x1)}, {strip(c.y1)}</td>
+                      <td>{strip(c.x2)}, {strip(c.y2)}</td>
+                      <td>{strip(c.length)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </details>
+          </div>
+        ))}
+      </details>
+    </div>
+  );
+}
+
+/**
  * 缺件补切区块：提交选中损坏件 → 展示补切清单（原板号 → 新板号）、
  * 新增板数与材料费、补切板图与刀序。原方案落位与分摊不受影响。
  */
@@ -904,6 +1204,21 @@ function yuan(cents) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+}
+// 带正负号的金额（元）：费用差值一律以后端整数“分”为准
+function signedYuan(cents) {
+  const n = Number(cents || 0);
+  const sign = n > 0 ? '+' : n < 0 ? '−' : '';
+  return `${sign}¥${yuan(Math.abs(n))}`;
+}
+function signedInt(n) {
+  const v = Number(n || 0);
+  return v > 0 ? `+${v}` : v < 0 ? `−${Math.abs(v)}` : `${v}`;
+}
+// 撤单后费用上升标红、下降标绿、持平不着色
+function deltaClass(delta) {
+  const n = Number(delta || 0);
+  return n > 0 ? 'delta-up' : n < 0 ? 'delta-down' : '';
 }
 function fmt(n) {
   return Number(n).toLocaleString('zh-CN', { maximumFractionDigits: 2 });

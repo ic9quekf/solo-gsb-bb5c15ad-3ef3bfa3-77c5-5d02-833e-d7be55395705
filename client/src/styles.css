@@ -352,6 +352,40 @@ summary { cursor: pointer; font-size: 13px; color: var(--blue); }
 .recut-subtitle { font-size: 14px; margin: 18px 0 6px; }
 .recut-board { border-color: #f59e0b; }
 
+/* ---- 撤单影响预览 ---- */
+.cancel-section {
+  margin-top: 26px;
+  border-top: 2px solid var(--blue);
+  padding-top: 4px;
+}
+.cancel-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.cancel-select {
+  flex: 1 1 240px;
+  max-width: 340px;
+  width: auto;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+  background: #fff;
+}
+.cancel-controls .btn.primary { margin-top: 0; }
+.cancel-warn { color: #b45309; }
+.cancel-result { margin-top: 14px; }
+.cancel-target b { color: #1d4ed8; }
+.cancel-result .stock-table td:nth-child(2),
+.cancel-result .stock-table td:nth-child(3) { font-variant-numeric: tabular-nums; }
+.cancel-boards { margin-top: 14px; }
+.cancel-boards > summary { font-size: 14px; font-weight: 600; }
+.delta-up { color: #b91c1c; font-variant-numeric: tabular-nums; }
+.delta-down { color: #047857; font-variant-numeric: tabular-nums; }
+
 .sel-col { width: 40px; text-align: center !important; }
 .sel-col input[type="checkbox"] {
   width: 15px;

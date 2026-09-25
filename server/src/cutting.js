@@ -735,20 +735,14 @@ function orderSummaryRows(orderSummary) {
 }
 
 /**
- * 多订单拼版主入口。
- * 多订单输入：
- *   {
- *     boardWidth, boardHeight, kerf, boardPrice,
- *     orders: [{ orderNo, parts: [{ name, width, height, quantity }] }]
- *   }
- * 兼容旧版单订单输入（顶层 parts，无 orders）：整体视为一个订单。
- * 返回逐板裁切方案与按订单的取件清单 / 材料费分摊；输入不合法时抛 UserError。
+ * 由已解析参数组装完整排料结果（cutBoards 与撤单预览的撤单后重算共用）。
+ * parsed 至少包含 parseInput 的全部字段；撤单后重算时以筛除后的
+ * groups / ordersList / totalQty 覆盖（订单号沿用原方案固定编号，不重新自动编号）。
  */
-function cutBoards(input) {
-  const parsed = parseInput(input);
+function cutBoardsFromParsed(parsed) {
   const { boardWidth, boardHeight, kerf, boardPriceCents, maxCutLength, stockBoards } = parsed;
 
-  const { boards, usedStockIndices } = layoutParts(
+  const { boards } = layoutParts(
     boardWidth, boardHeight, kerf, parsed.groups, maxCutLength, stockBoards, boardPriceCents
   );
   const { resultBoards, orderSummary } = summarizeBoards(boards, parsed.ordersList);
@@ -841,6 +835,105 @@ function cutBoards(input) {
     pickList,
     boards: resultBoards,
   };
+}
+
+/**
+ * 多订单拼版主入口。
+ * 多订单输入：
+ *   {
+ *     boardWidth, boardHeight, kerf, boardPrice,
+ *     orders: [{ orderNo, parts: [{ name, width, height, quantity }] }]
+ *   }
+ * 兼容旧版单订单输入（顶层 parts，无 orders）：整体视为一个订单。
+ * 返回逐板裁切方案与按订单的取件清单 / 材料费分摊；输入不合法时抛 UserError。
+ */
+function cutBoards(input) {
+  return cutBoardsFromParsed(parseInput(input));
+}
+
+/**
+ * 撤单影响预览。
+ * 输入 = 排料输入（同 cutBoards）+ cancelOrderNo（要撤下的订单号）。
+ *
+ * 流程：以生成方案时的同一输入快照解析并计算原方案（原样返回，不受预览影响）→
+ * 按订单号在原方案中定位撤单对象（空白订单号已按其在原输入中的位置固定自动编号，
+ * 故订单号即原方案编号）→ 将该订单的全部零件行筛除后，其余订单
+ * （订单号与输入顺序均保持不变，绝不重新自动编号）沿用完全相同的切割规则重排，
+ * 并对比撤单前后的新增标准板数、已用余板编号、材料费总额与每张保留订单的分摊额。
+ *
+ * 费用差值一律以整数“分”计算。只有一张订单、订单号在原方案中不存在时明确报错。
+ *
+ * 返回 { canceledOrder, original, after, compare }：
+ *  - original：撤单前方案，结构同 cutBoards；
+ *  - after：撤单后重排方案，结构同 cutBoards（订单号沿用原编号）；
+ *  - compare：前后新增标准板数、已用余板编号、材料费总额对比，以及每张保留订单的
+ *    撤单前 / 撤单后分摊额与增减差值（分）。
+ */
+function cancelPreviewBoards(input) {
+  if (!input || typeof input !== 'object') {
+    throw new UserError('请求体格式不正确');
+  }
+  const parsed = parseInput(input);
+
+  // 按原方案订单号定位撤单对象（空白订单号已按原位置固定自动编号为「订单N」）
+  const cancelOrderNo = input.cancelOrderNo === undefined || input.cancelOrderNo === null
+    ? ''
+    : String(input.cancelOrderNo).trim();
+  if (!cancelOrderNo) {
+    throw new UserError('请填写需要撤单的订单号');
+  }
+  const canceledOrder = parsed.ordersList.find((o) => o.order === cancelOrderNo);
+  if (!canceledOrder) {
+    throw new UserError(`订单号「${cancelOrderNo}」在原方案中不存在，请按原方案订单号选择撤单对象`);
+  }
+  if (parsed.ordersList.length <= 1) {
+    throw new UserError('原方案只有一张订单，无法撤单（撤单后将无任何保留订单）');
+  }
+
+  // 以同一输入快照计算撤单前方案（原样输出，预览不改动原方案）
+  const original = cutBoardsFromParsed(parsed);
+
+  // 筛除撤单订单：其余订单按原输入顺序保留，订单号沿用原编号（不重新自动编号）
+  const afterParsed = {
+    ...parsed,
+    groups: parsed.groups.filter((g) => g.order !== cancelOrderNo),
+    ordersList: parsed.ordersList.filter((o) => o.order !== cancelOrderNo),
+    totalQty: parsed.groups
+      .filter((g) => g.order !== cancelOrderNo)
+      .reduce((s, g) => s + g.quantity, 0),
+    legacy: false,
+  };
+  const after = cutBoardsFromParsed(afterParsed);
+
+  // ---- 前后对比（费用一律按整数分计算）----
+  const beforeCentsByOrder = new Map(original.orders.map((o) => [o.order, o.materialCents]));
+  const retainedOrders = after.orders.map((o) => {
+    const beforeCents = beforeCentsByOrder.get(o.order) ?? 0;
+    const deltaCents = o.materialCents - beforeCents;
+    return {
+      order: o.order,
+      partsCount: o.partsCount,
+      boardIndices: o.boardIndices,
+      beforeMaterialCents: beforeCents,
+      afterMaterialCents: o.materialCents,
+      deltaCents,
+    };
+  });
+
+  const compare = {
+    beforeStandardBoardsCount: original.standardBoardsCount,
+    afterStandardBoardsCount: after.standardBoardsCount,
+    standardBoardsDelta: after.standardBoardsCount - original.standardBoardsCount,
+    beforeStockUsedIds: original.stockUsed.map((s) => s.id),
+    afterStockUsedIds: after.stockUsed.map((s) => s.id),
+    beforeTotalMaterialCents: original.totalMaterialCents,
+    afterTotalMaterialCents: after.totalMaterialCents,
+    totalMaterialDeltaCents: after.totalMaterialCents - original.totalMaterialCents,
+    retainedCount: retainedOrders.length,
+    retainedOrders,
+  };
+
+  return { canceledOrder: cancelOrderNo, original, after, compare };
 }
 
 /**
@@ -1010,4 +1103,4 @@ function recutBoards(input) {
   };
 }
 
-module.exports = { cutBoards, recutBoards, UserError };
+module.exports = { cutBoards, recutBoards, cancelPreviewBoards, UserError };
