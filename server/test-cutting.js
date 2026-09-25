@@ -1,7 +1,7 @@
 /* 排料算法自检：面积守恒、刀路几何、多板、旋转与报错路径 */
 'use strict';
 const assert = require('assert');
-const { cutBoards, recutBoards, UserError } = require('./src/cutting');
+const { cutBoards, recutBoards, cancelPreviewBoards, UserError } = require('./src/cutting');
 
 // 1) 示例数据：面积守恒 + 基本字段
 const r = cutBoards({
@@ -644,5 +644,94 @@ assert.strictEqual(rcSt.recut.boards[0].cost.priceCents, 10000);
 for (const b of rcSt.recut.boards) assert.strictEqual(b.kind, 'standard', '补切不得使用余板');
 // 原方案库存耗用不受补切影响
 assert.deepStrictEqual(rcSt.original.stockUsed.map((s) => s.id), ['S1', 'S2']);
+
+// 34) 撤单影响预览：前后方案对照、保留订单差值（整数分）、原输入不被修改
+const cp = cancelPreviewBoards({ ...base, cancelOrder: 'B' });
+assert.strictEqual(cp.cancelOrder, 'B');
+// 撤单前与直接计算一致（3 张标准板、3000 分；A 1250、B 1750）
+assert.strictEqual(cp.before.standardBoardsCount, 3);
+assert.strictEqual(cp.before.totalMaterialCents, 3000);
+assert.deepStrictEqual(cp.before.stockUsed, []);
+assert.deepStrictEqual(cp.before.orders, [
+  { order: 'A', materialCents: 1250 },
+  { order: 'B', materialCents: 1750 },
+]);
+// 撤单后只剩 A：5 件 → 2 张标准板、2000 分
+assert.strictEqual(cp.after.standardBoardsCount, 2);
+assert.strictEqual(cp.after.totalMaterialCents, 2000);
+assert.deepStrictEqual(cp.after.orders, [{ order: 'A', materialCents: 2000 }]);
+// 被撤订单与保留订单差值（后 − 前，整数分）
+assert.strictEqual(cp.cancelled.beforeCents, 1750);
+assert.deepStrictEqual(cp.orders, [
+  { order: 'A', beforeCents: 1250, afterCents: 2000, deltaCents: 750 },
+]);
+assert.strictEqual(cp.diff.standardBoards, -1);
+assert.strictEqual(cp.diff.totalMaterialCents, -1000);
+assert.deepStrictEqual(cp.diff.stockUsedAdded, []);
+assert.deepStrictEqual(cp.diff.stockUsedRemoved, []);
+// 差值守恒：保留订单差值之和 = 总额差值 + 被撤订单原分摊额
+assert.strictEqual(
+  cp.orders.reduce((s, o) => s + o.deltaCents, 0),
+  cp.diff.totalMaterialCents + cp.cancelled.beforeCents
+);
+// 撤单前汇总与直接计算的方案一致（原方案不变）
+const direct = cutBoards(base);
+assert.strictEqual(cp.before.boardsCount, direct.boardsCount);
+assert.strictEqual(cp.before.totalMaterialCents, direct.totalMaterialCents);
+assert.deepStrictEqual(cp.before.stockUsed, direct.stockUsed.map((s) => s.id));
+
+// 35) 空白订单号按原位置固定自动编号，筛除后其余订单不改名
+const blankBase = {
+  boardWidth: 1200, boardHeight: 800, kerf: 0, boardPrice: 10,
+  orders: [
+    { orderNo: '', parts: [{ name: '块', width: 600, height: 400, quantity: 2 }] }, // 订单1
+    { orderNo: 'X', parts: [{ name: '块', width: 600, height: 400, quantity: 2 }] },
+    { orderNo: '', parts: [{ name: '块', width: 600, height: 400, quantity: 2 }] }, // 订单3
+  ],
+};
+const cpBlank = cancelPreviewBoards({ ...blankBase, cancelOrder: 'X' });
+// 保留订单仍叫 订单1、订单3（不重新编号为 订单1、订单2）
+assert.deepStrictEqual(cpBlank.orders.map((o) => o.order), ['订单1', '订单3']);
+assert.deepStrictEqual(cpBlank.after.orders.map((o) => o.order), ['订单1', '订单3']);
+// 原始输入不被修改（空白订单号仍为空）
+assert.strictEqual(blankBase.orders[0].orderNo, '');
+assert.strictEqual(blankBase.orders[2].orderNo, '');
+// 也可按自动编号撤单（撤 订单3，保留 X 与 订单1）
+const cpBlank2 = cancelPreviewBoards({ ...blankBase, cancelOrder: '订单3' });
+assert.deepStrictEqual(cpBlank2.orders.map((o) => o.order), ['订单1', 'X']);
+
+// 36) 撤单预览中的余板耗用对照：撤掉占用余板的订单后余板回到未用
+const cpStock = cancelPreviewBoards({
+  boardWidth: 1200, boardHeight: 800, kerf: 0, boardPrice: 100,
+  stockBoards: [{ id: 'S9', width: 300, height: 300 }],
+  orders: [
+    { orderNo: 'A', parts: [{ name: '小件', width: 250, height: 250, quantity: 1 }] }, // 启用余板 S9
+    { orderNo: 'B', parts: [{ name: '块', width: 600, height: 400, quantity: 1 }] },   // 标准新板
+  ],
+  cancelOrder: 'A',
+});
+assert.deepStrictEqual(cpStock.before.stockUsed, ['S9']);
+assert.deepStrictEqual(cpStock.after.stockUsed, []);
+assert.deepStrictEqual(cpStock.diff.stockUsedRemoved, ['S9']);
+assert.deepStrictEqual(cpStock.diff.stockUsedAdded, []);
+assert.strictEqual(cpStock.before.standardBoardsCount, 1);
+assert.strictEqual(cpStock.after.standardBoardsCount, 1);
+assert.strictEqual(cpStock.diff.totalMaterialCents, 0); // 前后都只有 1 张标准板
+
+// 37) 撤单预览校验：只有一张订单、订单号无效、未指定订单号
+assert.throws(() => cancelPreviewBoards({
+  boardWidth: 1000, boardHeight: 1000,
+  orders: [{ orderNo: 'ONLY', parts: [{ name: 'a', width: 10, height: 10, quantity: 1 }] }],
+  cancelOrder: 'ONLY',
+}), UserError, '只有一张订单应报错');
+assert.throws(() => cancelPreviewBoards({ ...base, cancelOrder: '不存在' }), UserError, '订单号无效应报错');
+assert.throws(() => cancelPreviewBoards({ ...base }), UserError, '未指定订单号应报错');
+assert.throws(() => cancelPreviewBoards({ ...base, cancelOrder: '  ' }), UserError, '空白订单号应报错');
+// 旧版单订单输入（顶层 parts）同样视为只有一张订单
+assert.throws(() => cancelPreviewBoards({
+  boardWidth: 1000, boardHeight: 1000,
+  parts: [{ name: 'a', width: 10, height: 10, quantity: 1 }],
+  cancelOrder: '订单1',
+}), UserError, '单订单旧版输入应报错');
 
 console.log('全部算法自检通过 ✔');

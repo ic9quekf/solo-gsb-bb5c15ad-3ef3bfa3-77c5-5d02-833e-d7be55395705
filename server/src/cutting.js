@@ -35,6 +35,14 @@
  *  - 仅将所选件按原始尺寸与原输入顺序（订单 → 零件行 → 件号）合并，
  *    重排为独立的补切方案（新增板单独计费），不改动原方案任何落位；
  *  - 补切清单逐件关联原板号与新板号，并给出新增板数与新增材料费。
+ *
+ * 撤单影响预览（cancelPreviewBoards）：
+ *  - 以生成方案时的同一份输入快照分别计算撤单前、撤单后两套排料，原方案本身不变；
+ *  - 按订单号定位撤单对象；订单号空白时先按原输入位置固定自动编号（订单1、订单2…），
+ *    筛除撤单订单后其余订单保持原名（不重新编号）；
+ *  - 输出前后新增标准板数、已用余板编号、材料费总额（整数分），
+ *    以及每张保留订单的分摊额与增减差值（整数分）；
+ *  - 只有一张订单或订单号无效时明确报错。
  */
 
 const EPS = 1e-9;
@@ -1010,4 +1018,92 @@ function recutBoards(input) {
   };
 }
 
-module.exports = { cutBoards, recutBoards, UserError };
+/**
+ * 撤单影响预览。
+ * 输入 = 排料输入（同 cutBoards，须为多订单 orders 模式）+ cancelOrder（要撤单的订单号）。
+ *
+ * 流程：以输入快照重算撤单前方案 → 校验撤单对象（至少两张订单、订单号有效）→
+ * 从订单清单中筛除该订单后重算撤单后方案。订单号空白的订单先按原输入位置
+ * 固定自动编号（订单1、订单2…），筛除后其余订单保持原名、不重新编号；
+ * 撤单前后两套方案互不影响，原方案落位与分摊保持不变。
+ *
+ * 返回 { cancelOrder, cancelled, before, after, orders, diff }：
+ *  - before / after：撤单前后汇总（新增标准板数、已用余板编号、材料费总额、各订单分摊额）；
+ *  - cancelled：被撤订单及其撤单前分摊额（分）；
+ *  - orders：每张保留订单的撤单前 / 后分摊额与增减差值（均为整数分，差值 = 后 − 前）；
+ *  - diff：新增标准板数与材料费总额的差值（后 − 前）、已用余板编号增删。
+ */
+function cancelPreviewBoards(input) {
+  if (!input || typeof input !== 'object') {
+    throw new UserError('请求体格式不正确');
+  }
+  // 解析输入快照：订单号空白处在此按原输入位置固定自动编号
+  const parsed = parseInput(input);
+
+  const cancelOrder = input.cancelOrder === undefined || input.cancelOrder === null
+    ? ''
+    : String(input.cancelOrder).trim();
+  if (!cancelOrder) {
+    throw new UserError('请指定要撤单的订单号');
+  }
+  if (parsed.ordersList.length < 2) {
+    throw new UserError('撤单预览至少需要两张订单，当前方案只有一张订单');
+  }
+  const target = parsed.ordersList.find((o) => o.order === cancelOrder);
+  if (!target) {
+    throw new UserError(
+      `撤单订单号无效：「${cancelOrder}」不在当前方案中（可选：${parsed.ordersList.map((o) => o.order).join('、')}）`
+    );
+  }
+
+  // 撤单前：以输入快照原样重算（与生成方案时一致）
+  const before = cutBoards(input);
+
+  // 撤单后：筛除目标订单；其余订单显式带上已固定的订单号，保证不改名、不重排
+  const afterOrders = input.orders
+    .map((o, oi) => ({ ...o, orderNo: parsed.ordersList[oi].order }))
+    .filter((o) => o.orderNo !== cancelOrder);
+  const after = cutBoards({ ...input, orders: afterOrders });
+
+  // 汇总快照：新增标准板数、已用余板编号（按板号顺序）、材料费总额与各订单分摊额
+  const summarize = (r) => ({
+    boardsCount: r.boardsCount,
+    standardBoardsCount: r.standardBoardsCount,
+    stockUsed: r.stockUsed.map((s) => s.id),
+    totalMaterialCents: r.totalMaterialCents,
+    orders: r.orders.map((o) => ({ order: o.order, materialCents: o.materialCents })),
+  });
+  const beforeSum = summarize(before);
+  const afterSum = summarize(after);
+
+  // 保留订单对照（按原订单输入顺序）：差值按整数分计算（后 − 前）
+  const beforeCents = new Map(beforeSum.orders.map((o) => [o.order, o.materialCents]));
+  const orders = afterSum.orders.map((o) => {
+    const b = beforeCents.get(o.order) || 0;
+    return {
+      order: o.order,
+      beforeCents: b,
+      afterCents: o.materialCents,
+      deltaCents: o.materialCents - b,
+    };
+  });
+
+  const beforeStock = new Set(beforeSum.stockUsed);
+  const afterStock = new Set(afterSum.stockUsed);
+
+  return {
+    cancelOrder,
+    cancelled: { order: cancelOrder, beforeCents: beforeCents.get(cancelOrder) || 0 },
+    before: beforeSum,
+    after: afterSum,
+    orders,
+    diff: {
+      standardBoards: afterSum.standardBoardsCount - beforeSum.standardBoardsCount,
+      totalMaterialCents: afterSum.totalMaterialCents - beforeSum.totalMaterialCents,
+      stockUsedAdded: afterSum.stockUsed.filter((id) => !beforeStock.has(id)),
+      stockUsedRemoved: beforeSum.stockUsed.filter((id) => !afterStock.has(id)),
+    },
+  };
+}
+
+module.exports = { cutBoards, recutBoards, cancelPreviewBoards, UserError };

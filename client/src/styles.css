@@ -362,6 +362,37 @@ summary { cursor: pointer; font-size: 13px; color: var(--blue); }
 .pick-table tr.row-selected td { background: #fffbeb; }
 .board-num.old { background: #94a3b8; }
 
+/* ---- 撤单影响预览 ---- */
+.cancel-section {
+  margin-top: 26px;
+  border-top: 2px solid #38bdf8;
+  padding-top: 4px;
+}
+.cancel-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  margin-top: 10px;
+}
+.cancel-controls label { min-width: 220px; }
+.cancel-controls select {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 14px;
+  background: #fff;
+}
+.cancel-controls select:focus { outline: 2px solid rgba(37, 99, 235, 0.35); border-color: var(--blue); }
+.cancel-section .alert { margin-top: 12px; }
+.cancel-result { margin-top: 14px; }
+.cancel-subtitle { font-size: 14px; margin: 18px 0 6px; }
+.delta { font-weight: 700; font-variant-numeric: tabular-nums; }
+.delta-pos { color: #b91c1c; }
+.delta-neg { color: #047857; }
+.delta-zero { color: var(--muted); font-weight: 400; }
+
 .site-footer {
   margin-top: 22px;
   text-align: center;
